@@ -14,25 +14,29 @@ path = "src/main.rs"
 
 [dependencies]
 # OpenVM circuit crates for accessing AIR circuits
-openvm-poseidon2-air = { workspace = true }
-openvm-sha256-air = { workspace = true }
+openvm-circuit = { workspace = true }
 openvm-circuit-primitives = { workspace = true }
+openvm-poseidon2-air = { workspace = true }
+openvm-rv32im-circuit = { workspace = true }
+openvm-sha256-air = { workspace = true }
 openvm-stark-backend = { workspace = true }
 openvm-stark-sdk = { workspace = true }
 
 # Standard dependencies
 clap = { workspace = true, features = ["derive"] }
+eyre = { workspace = true }
+num-bigint = "0.4"
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3"
-eyre = { workspace = true }
-thiserror = { workspace = true }
 
 # Plonky3 dependencies for circuit inspection
-p3-poseidon2-air = { workspace = true }
-p3-keccak-air = { workspace = true }
-p3-field = { workspace = true }
 p3-baby-bear = { workspace = true }
+p3-field = { workspace = true }
+p3-keccak-air = { workspace = true }
+p3-poseidon2-air = { workspace = true }
 
 [features]
 default = ["parallel"]

@@ -41,6 +41,7 @@ pub fn print_circuit(args: PrintCircuitArgs) -> Result<()> {
     );
 
     let printer = CircuitPrinter::new();
+    CircuitPrinter::print_to_json::<4>();
 
     match args.circuit_type {
         CircuitType::Poseidon2 => {

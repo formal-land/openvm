@@ -1,4 +1,12 @@
 use eyre::Result;
+use openvm_circuit::arch::{AdapterAirContext, BasicAdapterInterface, ImmInstruction, VmCoreAir};
+use openvm_stark_backend::air_builders::symbolic::symbolic_expression::SymbolicExpression;
+use openvm_stark_backend::air_builders::symbolic::symbolic_variable::{Entry, SymbolicVariable};
+use openvm_stark_backend::interaction::{BusIndex, Interaction, InteractionBuilder};
+use openvm_stark_backend::p3_air::AirBuilder;
+use openvm_stark_backend::p3_matrix::dense::RowMajorMatrix;
+use openvm_stark_sdk::p3_goldilocks::Goldilocks;
+use serde::Deserialize;
 use serde_json::json;
 use std::fs::File;
 use std::io::Write;
@@ -7,6 +15,62 @@ use tracing::info;
 use crate::commands::OutputFormat;
 
 pub struct CircuitPrinter;
+
+#[derive(Deserialize, Default)]
+struct JsonBuilder(Vec<SymbolicExpression<Goldilocks>>);
+
+impl AirBuilder for JsonBuilder {
+    type F = Goldilocks;
+
+    type Expr = SymbolicExpression<Self::F>;
+
+    type Var = SymbolicVariable<Self::F>;
+
+    type M = RowMajorMatrix<Self::Var>;
+
+    fn main(&self) -> <Self as AirBuilder>::M {
+        unimplemented!()
+    }
+
+    fn is_first_row(&self) -> <Self as AirBuilder>::Expr {
+        unimplemented!()
+    }
+
+    fn is_last_row(&self) -> <Self as AirBuilder>::Expr {
+        unimplemented!()
+    }
+
+    fn is_transition_window(&self, _: usize) -> <Self as AirBuilder>::Expr {
+        unimplemented!()
+    }
+
+    fn assert_zero<I>(&mut self, expr: I)
+    where
+        I: Into<Self::Expr>,
+    {
+        self.0.push(expr.into());
+    }
+}
+
+impl InteractionBuilder for JsonBuilder {
+    fn push_interaction<E: Into<Self::Expr>>(
+        &mut self,
+        _bus_index: BusIndex,
+        _fields: impl IntoIterator<Item = E>,
+        _count: impl Into<Self::Expr>,
+        _count_weight: u32,
+    ) {
+        unimplemented!()
+    }
+
+    fn num_interactions(&self) -> usize {
+        unimplemented!()
+    }
+
+    fn all_interactions(&self) -> &[Interaction<Self::Expr>] {
+        unimplemented!()
+    }
+}
 
 impl CircuitPrinter {
     pub fn new() -> Self {
@@ -166,5 +230,54 @@ impl CircuitPrinter {
         output.push_str("}\n");
 
         Ok(output)
+    }
+
+    pub(crate) fn print_to_json<const NUM_LIMBS: usize>() {
+        let air: openvm_rv32im_circuit::BranchEqualCoreAir<NUM_LIMBS> =
+            openvm_rv32im_circuit::BranchEqualCoreChip::new(12, 23).air;
+        let mut builder = JsonBuilder::default();
+
+        let adapter_air_context: AdapterAirContext<
+            SymbolicExpression<Goldilocks>,
+            BasicAdapterInterface<
+                SymbolicExpression<Goldilocks>,
+                ImmInstruction<SymbolicExpression<Goldilocks>>,
+                2,
+                0,
+                NUM_LIMBS,
+                NUM_LIMBS,
+            >,
+        > = air.eval(
+            &mut builder,
+            &[
+                SymbolicVariable::new(Entry::Public, 0),
+                SymbolicVariable::new(Entry::Public, 1),
+                SymbolicVariable::new(Entry::Public, 2),
+                SymbolicVariable::new(Entry::Public, 3),
+                SymbolicVariable::new(Entry::Public, 4),
+                SymbolicVariable::new(Entry::Public, 5),
+                SymbolicVariable::new(Entry::Public, 6),
+                SymbolicVariable::new(Entry::Public, 7),
+                SymbolicVariable::new(Entry::Public, 8),
+                SymbolicVariable::new(Entry::Public, 9),
+                SymbolicVariable::new(Entry::Public, 10),
+                SymbolicVariable::new(Entry::Public, 11),
+                SymbolicVariable::new(Entry::Public, 12),
+                SymbolicVariable::new(Entry::Public, 13),
+                SymbolicVariable::new(Entry::Public, 14),
+                SymbolicVariable::new(Entry::Public, 15),
+            ],
+            SymbolicVariable::new(Entry::Public, 16),
+        );
+
+        let json = serde_json::to_string_pretty(&builder.0).unwrap();
+        println!("{}", json);
+
+        println!("{:#?}", adapter_air_context.to_pc);
+        println!("{:#?}", adapter_air_context.reads);
+        println!("{:#?}", adapter_air_context.writes);
+        println!("{:#?}", adapter_air_context.instruction.is_valid);
+        println!("{:#?}", adapter_air_context.instruction.opcode);
+        println!("{:#?}", adapter_air_context.instruction.immediate);
     }
 }
