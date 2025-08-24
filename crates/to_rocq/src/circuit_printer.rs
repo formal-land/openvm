@@ -179,10 +179,18 @@ impl<'a, F> FlatSymbolicExpression<'a, F> {
             SymbolicExpression::IsLastRow => Self::IsLastRow,
             SymbolicExpression::IsTransition => Self::IsTransition,
             SymbolicExpression::Constant(c) => Self::Constant(c),
-            SymbolicExpression::Add { x, y, .. } => Self::Add(vec![
-                Arc::new(Self::from_symbolic_expression(x)),
-                Arc::new(Self::from_symbolic_expression(y)),
-            ]),
+            SymbolicExpression::Add { x, y, .. } => {
+                let x = Self::from_symbolic_expression(x);
+                let y = Self::from_symbolic_expression(y);
+                match (&x, &y) {
+                    (Self::Add(xs), Self::Add(ys)) => {
+                        Self::Add([xs.to_vec(), ys.to_vec()].concat())
+                    }
+                    (Self::Add(xs), _) => Self::Add([xs.to_vec(), vec![Arc::new(y)]].concat()),
+                    (_, Self::Add(ys)) => Self::Add([vec![Arc::new(x)], ys.to_vec()].concat()),
+                    (_, _) => Self::Add(vec![Arc::new(x), Arc::new(y)]),
+                }
+            }
             SymbolicExpression::Sub { x, y, .. } => Self::Sub {
                 x: Arc::new(Self::from_symbolic_expression(x)),
                 y: Arc::new(Self::from_symbolic_expression(y)),
@@ -190,10 +198,18 @@ impl<'a, F> FlatSymbolicExpression<'a, F> {
             SymbolicExpression::Neg { x, .. } => Self::Neg {
                 x: Arc::new(Self::from_symbolic_expression(x)),
             },
-            SymbolicExpression::Mul { x, y, .. } => Self::Mul(vec![
-                Arc::new(Self::from_symbolic_expression(x)),
-                Arc::new(Self::from_symbolic_expression(y)),
-            ]),
+            SymbolicExpression::Mul { x, y, .. } => {
+                let x = Self::from_symbolic_expression(x);
+                let y = Self::from_symbolic_expression(y);
+                match (&x, &y) {
+                    (Self::Mul(xs), Self::Mul(ys)) => {
+                        Self::Mul([xs.to_vec(), ys.to_vec()].concat())
+                    }
+                    (Self::Mul(xs), _) => Self::Mul([xs.to_vec(), vec![Arc::new(y)]].concat()),
+                    (_, Self::Mul(ys)) => Self::Mul([vec![Arc::new(x)], ys.to_vec()].concat()),
+                    (_, _) => Self::Mul(vec![Arc::new(x), Arc::new(y)]),
+                }
+            }
         }
     }
 }
