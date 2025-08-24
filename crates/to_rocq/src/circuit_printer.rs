@@ -7,6 +7,7 @@ use openvm_stark_backend::p3_matrix::dense::RowMajorMatrix;
 use openvm_stark_sdk::p3_goldilocks::Goldilocks;
 use p3_field::Field;
 use std::fmt::Debug;
+use std::sync::Arc;
 
 #[derive(Default)]
 struct RocqAirBuilder(Vec<SymbolicExpression<Goldilocks>>);
@@ -103,7 +104,8 @@ pub(crate) fn print_branch_eq<const NUM_LIMBS: usize>() {
     );
 
     builder.to_rocq(0);
-    adapter_air_context.to_rocq(0);
+    println!("Result 🛍️");
+    adapter_air_context.to_rocq(2);
 }
 
 trait ToRocq {
@@ -143,9 +145,102 @@ where
 impl<T: ToRocq> ToRocq for ImmInstruction<T> {
     fn to_rocq(&self, indent: usize) {
         println!("{}{}", " ".repeat(indent), "ImmInstruction:");
-        self.is_valid.to_rocq(indent + 2);
-        self.opcode.to_rocq(indent + 2);
-        self.immediate.to_rocq(indent + 2);
+        println!("{}{}", " ".repeat(indent + 2), "is_valid:");
+        self.is_valid.to_rocq(indent + 4);
+        println!("{}{}", " ".repeat(indent + 2), "opcode:");
+        self.opcode.to_rocq(indent + 4);
+        println!("{}{}", " ".repeat(indent + 2), "immediate:");
+        self.immediate.to_rocq(indent + 4);
+    }
+}
+
+enum FlatSymbolicExpression<'a, F> {
+    Variable(&'a SymbolicVariable<F>),
+    IsFirstRow,
+    IsLastRow,
+    IsTransition,
+    Constant(&'a F),
+    Add(Vec<Arc<FlatSymbolicExpression<'a, F>>>),
+    Sub {
+        x: Arc<FlatSymbolicExpression<'a, F>>,
+        y: Arc<FlatSymbolicExpression<'a, F>>,
+    },
+    Neg {
+        x: Arc<FlatSymbolicExpression<'a, F>>,
+    },
+    Mul(Vec<Arc<FlatSymbolicExpression<'a, F>>>),
+}
+
+impl<'a, F> FlatSymbolicExpression<'a, F> {
+    fn from_symbolic_expression(expr: &'a SymbolicExpression<F>) -> Self {
+        match expr {
+            SymbolicExpression::Variable(v) => Self::Variable(v),
+            SymbolicExpression::IsFirstRow => Self::IsFirstRow,
+            SymbolicExpression::IsLastRow => Self::IsLastRow,
+            SymbolicExpression::IsTransition => Self::IsTransition,
+            SymbolicExpression::Constant(c) => Self::Constant(c),
+            SymbolicExpression::Add { x, y, .. } => Self::Add(vec![
+                Arc::new(Self::from_symbolic_expression(x)),
+                Arc::new(Self::from_symbolic_expression(y)),
+            ]),
+            SymbolicExpression::Sub { x, y, .. } => Self::Sub {
+                x: Arc::new(Self::from_symbolic_expression(x)),
+                y: Arc::new(Self::from_symbolic_expression(y)),
+            },
+            SymbolicExpression::Neg { x, .. } => Self::Neg {
+                x: Arc::new(Self::from_symbolic_expression(x)),
+            },
+            SymbolicExpression::Mul { x, y, .. } => Self::Mul(vec![
+                Arc::new(Self::from_symbolic_expression(x)),
+                Arc::new(Self::from_symbolic_expression(y)),
+            ]),
+        }
+    }
+}
+
+impl<'a, F> ToRocq for FlatSymbolicExpression<'a, F>
+where
+    F: Debug,
+{
+    fn to_rocq(&self, indent: usize) {
+        match self {
+            FlatSymbolicExpression::Variable(v) => {
+                println!("{}{} {:?}", " ".repeat(indent), "Variable:", v.index);
+            }
+            FlatSymbolicExpression::IsFirstRow => {
+                println!("{}{}", " ".repeat(indent), "IsFirstRow");
+            }
+            FlatSymbolicExpression::IsLastRow => {
+                println!("{}{}", " ".repeat(indent), "IsLastRow");
+            }
+            FlatSymbolicExpression::IsTransition => {
+                println!("{}{}", " ".repeat(indent), "IsTransition");
+            }
+            FlatSymbolicExpression::Constant(c) => {
+                println!("{}{} {:?}", " ".repeat(indent), "Constant:", c);
+            }
+            FlatSymbolicExpression::Add(xs) => {
+                println!("{}{}", " ".repeat(indent), "Add:");
+                for x in xs {
+                    x.to_rocq(indent + 2);
+                }
+            }
+            FlatSymbolicExpression::Sub { x, y } => {
+                println!("{}{}", " ".repeat(indent), "Sub:");
+                x.to_rocq(indent + 2);
+                y.to_rocq(indent + 2);
+            }
+            FlatSymbolicExpression::Neg { x } => {
+                println!("{}{}", " ".repeat(indent), "Neg:");
+                x.to_rocq(indent + 2);
+            }
+            FlatSymbolicExpression::Mul(xs) => {
+                println!("{}{}", " ".repeat(indent), "Mul:");
+                for x in xs {
+                    x.to_rocq(indent + 2);
+                }
+            }
+        }
     }
 }
 
@@ -155,42 +250,7 @@ where
     F: Debug,
 {
     fn to_rocq(&self, indent: usize) {
-        match self {
-            SymbolicExpression::Variable(v) => {
-                println!("{}{} {:?}", " ".repeat(indent), "Variable:", v.index);
-            }
-            SymbolicExpression::IsFirstRow => {
-                println!("{}{}", " ".repeat(indent), "IsFirstRow");
-            }
-            SymbolicExpression::IsLastRow => {
-                println!("{}{}", " ".repeat(indent), "IsLastRow");
-            }
-            SymbolicExpression::IsTransition => {
-                println!("{}{}", " ".repeat(indent), "IsTransition");
-            }
-            SymbolicExpression::Constant(c) => {
-                println!("{}{} {:?}", " ".repeat(indent), "Constant:", c);
-            }
-            SymbolicExpression::Add { x, y, .. } => {
-                println!("{}{}", " ".repeat(indent), "Add:");
-                x.to_rocq(indent + 2);
-                y.to_rocq(indent + 2);
-            }
-            SymbolicExpression::Sub { x, y, .. } => {
-                println!("{}{}", " ".repeat(indent), "Sub:");
-                x.to_rocq(indent + 2);
-                y.to_rocq(indent + 2);
-            }
-            SymbolicExpression::Neg { x, .. } => {
-                println!("{}{}", " ".repeat(indent), "Neg:");
-                x.to_rocq(indent + 2);
-            }
-            SymbolicExpression::Mul { x, y, .. } => {
-                println!("{}{}", " ".repeat(indent), "Mul:");
-                x.to_rocq(indent + 2);
-                y.to_rocq(indent + 2);
-            }
-        }
+        FlatSymbolicExpression::from_symbolic_expression(self).to_rocq(indent);
     }
 }
 
@@ -219,7 +279,7 @@ impl<T: ToRocq, const N: usize> ToRocq for [T; N] {
 
 impl ToRocq for RocqAirBuilder {
     fn to_rocq(&self, indent: usize) {
-        println!("{}{}", " ".repeat(indent), "Builder:");
+        println!("{}{}", " ".repeat(indent), "Trace 🐾");
         for item in &self.0 {
             println!("{}{}", " ".repeat(indent + 2), "AssertZero:");
             item.to_rocq(indent + 4);
