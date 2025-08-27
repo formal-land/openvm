@@ -3,7 +3,7 @@ use std::{array, borrow::Borrow, cmp::max, iter::once};
 use openvm_circuit_primitives::{
     bitwise_op_lookup::BitwiseOperationLookupBus,
     encoder::Encoder,
-    utils::{not, select},
+    utils::{not, select, LoggingAirBuilder},
     SubAir,
 };
 use openvm_stark_backend::{
@@ -49,7 +49,10 @@ impl<F> BaseAir<F> for Sha256Air {
     }
 }
 
-impl<AB: InteractionBuilder> SubAir<AB> for Sha256Air {
+impl<AB: InteractionBuilder> SubAir<AB> for Sha256Air
+where
+    AB: LoggingAirBuilder,
+{
     /// The start column for the sub-air to use
     type AirContext<'a>
         = usize
@@ -72,7 +75,11 @@ impl<AB: InteractionBuilder> SubAir<AB> for Sha256Air {
 impl Sha256Air {
     /// Implements the single row constraints (i.e. imposes constraints only on local)
     /// Implements some sanity constraints on the row index, flags, and work variables
-    fn eval_row<AB: InteractionBuilder>(&self, builder: &mut AB, start_col: usize) {
+    fn eval_row<AB: InteractionBuilder>(&self, builder: &mut AB, start_col: usize)
+    where
+        AB: LoggingAirBuilder,
+    {
+        builder.log_in_constraints("eval_row");
         let main = builder.main();
         let local = main.row_slice(0);
 
@@ -81,42 +88,46 @@ impl Sha256Air {
         let local_cols: &Sha256DigestCols<AB::Var> =
             local[start_col..start_col + SHA256_DIGEST_WIDTH].borrow();
         let flags = &local_cols.flags;
+        builder.log_in_constraints("eval_row::flags");
         builder.assert_bool(flags.is_round_row);
         builder.assert_bool(flags.is_first_4_rows);
         builder.assert_bool(flags.is_digest_row);
         builder.assert_bool(flags.is_round_row + flags.is_digest_row);
         builder.assert_bool(flags.is_last_block);
 
-        self.row_idx_encoder
-            .eval(builder, &local_cols.flags.row_idx);
-        builder.assert_one(
-            self.row_idx_encoder
-                .contains_flag_range::<AB>(&local_cols.flags.row_idx, 0..=17),
-        );
-        builder.assert_eq(
-            self.row_idx_encoder
-                .contains_flag_range::<AB>(&local_cols.flags.row_idx, 0..=3),
-            flags.is_first_4_rows,
-        );
-        builder.assert_eq(
-            self.row_idx_encoder
-                .contains_flag_range::<AB>(&local_cols.flags.row_idx, 0..=15),
-            flags.is_round_row,
-        );
-        builder.assert_eq(
-            self.row_idx_encoder
-                .contains_flag::<AB>(&local_cols.flags.row_idx, &[16]),
-            flags.is_digest_row,
-        );
-        // If padding row we want the row_idx to be 17
-        builder.assert_eq(
-            self.row_idx_encoder
-                .contains_flag::<AB>(&local_cols.flags.row_idx, &[17]),
-            flags.is_padding_row(),
-        );
+        // builder.log_in_constraints("eval_row::row_idx_encoder");
+        // self.row_idx_encoder
+        //     .eval(builder, &local_cols.flags.row_idx);
+        // builder.log_in_constraints("eval_row::row_idx_encoder_assert");
+        // builder.assert_one(
+        //     self.row_idx_encoder
+        //         .contains_flag_range::<AB>(&local_cols.flags.row_idx, 0..=17),
+        // );
+        // builder.assert_eq(
+        //     self.row_idx_encoder
+        //         .contains_flag_range::<AB>(&local_cols.flags.row_idx, 0..=3),
+        //     flags.is_first_4_rows,
+        // );
+        // builder.assert_eq(
+        //     self.row_idx_encoder
+        //         .contains_flag_range::<AB>(&local_cols.flags.row_idx, 0..=15),
+        //     flags.is_round_row,
+        // );
+        // builder.assert_eq(
+        //     self.row_idx_encoder
+        //         .contains_flag::<AB>(&local_cols.flags.row_idx, &[16]),
+        //     flags.is_digest_row,
+        // );
+        // // If padding row we want the row_idx to be 17
+        // builder.assert_eq(
+        //     self.row_idx_encoder
+        //         .contains_flag::<AB>(&local_cols.flags.row_idx, &[17]),
+        //     flags.is_padding_row(),
+        // );
 
         // Constrain a, e, being composed of bits: we make sure a and e are always in the same place
         // in the trace matrix Note: this has to be true for every row, even padding rows
+        builder.log_in_constraints("eval_row::hash");
         for i in 0..SHA256_ROUNDS_PER_ROW {
             for j in 0..SHA256_WORD_BITS {
                 builder.assert_bool(local_cols.hash.a[i][j]);
@@ -134,9 +145,13 @@ impl Sha256Air {
         builder: &mut AB,
         local: &Sha256RoundCols<AB::Var>,
         next: &Sha256DigestCols<AB::Var>,
-    ) {
+    ) where
+        AB: LoggingAirBuilder,
+    {
+        builder.log_in_constraints("eval_digest_row");
         // Check that if this is the last row of a message or an inpadding row, the hash should be
         // the [SHA256_H]
+        builder.log_in_constraints("eval_digest_row::first_loop");
         for i in 0..SHA256_ROUNDS_PER_ROW {
             let a = next.hash.a[i].map(|x| x.into());
             let e = next.hash.e[i].map(|x| x.into());
@@ -174,6 +189,7 @@ impl Sha256Air {
 
         // Check if last row of a non-last block, the `hash` should be equal to the final hash of
         // the current block
+        builder.log_in_constraints("eval_digest_row::second_loop");
         for i in 0..SHA256_ROUNDS_PER_ROW {
             let prev_a = next.hash.a[i].map(|x| x.into());
             let prev_e = next.hash.e[i].map(|x| x.into());
@@ -197,6 +213,7 @@ impl Sha256Air {
         // Assert that the previous hash + work vars == final hash.
         // That is, `next.prev_hash[i] + local.work_vars[i] == next.final_hash[i]`
         // where addition is done modulo 2^32
+        builder.log_in_constraints("eval_digest_row::third_loop");
         for i in 0..SHA256_HASH_WORDS {
             let mut carry = AB::Expr::ZERO;
             for j in 0..SHA256_WORD_U16S {
@@ -222,15 +239,19 @@ impl Sha256Air {
             }
             // constrain the final hash limbs two at a time since we can do two checks per
             // interaction
-            for chunk in next.final_hash[i].chunks(2) {
-                self.bitwise_lookup_bus
-                    .send_range(chunk[0], chunk[1])
-                    .eval(builder, next.flags.is_digest_row);
-            }
+            // for chunk in next.final_hash[i].chunks(2) {
+            //     self.bitwise_lookup_bus
+            //         .send_range(chunk[0], chunk[1])
+            //         .eval(builder, next.flags.is_digest_row);
+            // }
         }
     }
 
-    fn eval_transitions<AB: InteractionBuilder>(&self, builder: &mut AB, start_col: usize) {
+    fn eval_transitions<AB: InteractionBuilder>(&self, builder: &mut AB, start_col: usize)
+    where
+        AB: LoggingAirBuilder,
+    {
+        builder.log_in_constraints("eval_transitions");
         let main = builder.main();
         let local = main.row_slice(0);
         let next = main.row_slice(1);
@@ -250,6 +271,7 @@ impl Sha256Air {
         // We check that the very last block has `is_last_block` set to true, which guarantees that
         // there is at least one complete message. If other digest rows have `is_last_block` set to
         // true, then the trace will be interpreted as containing multiple messages.
+        builder.log_in_constraints("eval_transitions::first_block");
         builder
             .when(next_is_padding_row.clone())
             .when(local_cols.flags.is_digest_row)
@@ -285,25 +307,26 @@ impl Sha256Air {
                 * AB::Expr::NEG_ONE
             + local_cols.flags.is_digest_row * next_is_padding_row.clone() * AB::Expr::ONE;
 
-        let local_row_idx = self.row_idx_encoder.flag_with_val::<AB>(
-            &local_cols.flags.row_idx,
-            &(0..18).map(|i| (i, i)).collect::<Vec<_>>(),
-        );
-        let next_row_idx = self.row_idx_encoder.flag_with_val::<AB>(
-            &next_cols.flags.row_idx,
-            &(0..18).map(|i| (i, i)).collect::<Vec<_>>(),
-        );
+        // let local_row_idx = self.row_idx_encoder.flag_with_val::<AB>(
+        //     &local_cols.flags.row_idx,
+        //     &(0..18).map(|i| (i, i)).collect::<Vec<_>>(),
+        // );
+        // let next_row_idx = self.row_idx_encoder.flag_with_val::<AB>(
+        //     &next_cols.flags.row_idx,
+        //     &(0..18).map(|i| (i, i)).collect::<Vec<_>>(),
+        // );
 
-        builder
-            .when_transition()
-            .assert_eq(local_row_idx.clone() + delta, next_row_idx.clone());
-        builder.when_first_row().assert_zero(local_row_idx);
+        // builder
+        //     .when_transition()
+        //     .assert_eq(local_row_idx.clone() + delta, next_row_idx.clone());
+        // builder.when_first_row().assert_zero(local_row_idx);
 
         // Constrain the global block index
         // We set the global block index to 0 for padding rows
         // Starting with 1 so it is not the same as the padding rows
 
         // Global block index is 1 on first row
+        builder.log_in_constraints("eval_transitions::second_block");
         builder
             .when_first_row()
             .assert_one(local_cols.flags.global_block_idx);
@@ -330,6 +353,7 @@ impl Sha256Air {
         // Constrain the local block index
         // We set the local block index to 0 for padding rows
 
+        builder.log_in_constraints("eval_transitions::third_block");
         // Local block index is constant on all rows in a block
         // and its value on padding rows is equal to its value on the first block
         builder.when(not(local_cols.flags.is_digest_row)).assert_eq(
@@ -358,7 +382,8 @@ impl Sha256Air {
         self.eval_digest_row(builder, local_cols, next_cols);
         let local_cols: &Sha256DigestCols<AB::Var> =
             local[start_col..start_col + SHA256_DIGEST_WIDTH].borrow();
-        self.eval_prev_hash::<AB>(builder, local_cols, next_is_padding_row);
+        // TODO
+        // self.eval_prev_hash::<AB>(builder, local_cols, next_is_padding_row);
     }
 
     /// Constrains that the next block's `prev_hash` is equal to the current block's `hash`
@@ -369,7 +394,10 @@ impl Sha256Air {
         local: &Sha256DigestCols<AB::Var>,
         is_last_block_of_trace: AB::Expr, /* note this indicates the last block of the trace,
                                            * not the last block of the message */
-    ) {
+    ) where
+        AB: LoggingAirBuilder,
+    {
+        builder.log_in_constraints("eval_prev_hash");
         // Constrain that next block's `prev_hash` is equal to the current block's `hash`
         let composed_hash: [[<AB as AirBuilder>::Expr; SHA256_WORD_U16S]; SHA256_HASH_WORDS] =
             array::from_fn(|i| {
@@ -417,11 +445,15 @@ impl Sha256Air {
         builder: &mut AB,
         local: &Sha256RoundCols<AB::Var>,
         next: &Sha256RoundCols<AB::Var>,
-    ) {
+    ) where
+        AB: LoggingAirBuilder,
+    {
+        builder.log_in_constraints("eval_message_schedule");
         // This `w` array contains 8 message schedule words - w_{idx}, ..., w_{idx+7} for some idx
         let w = [local.message_schedule.w, next.message_schedule.w].concat();
 
         // Constrain `w_3` for `next` row
+        builder.log_in_constraints("eval_message_schedule::first_loop");
         for i in 0..SHA256_ROUNDS_PER_ROW - 1 {
             // here we constrain the w_3 of the i_th word of the next row
             // w_3 of next is w[i+4-3] = w[i+1]
@@ -439,14 +471,15 @@ impl Sha256Air {
         // We will only constrain intermed_12 for rows [3, 14], and let it be unconstrained for
         // other rows Other rows should put the needed value in intermed_12 to make the
         // below summation constraint hold
-        let is_row_3_14 = self
-            .row_idx_encoder
-            .contains_flag_range::<AB>(&next.flags.row_idx, 3..=14);
+        // let is_row_3_14 = self
+        //     .row_idx_encoder
+        //     .contains_flag_range::<AB>(&next.flags.row_idx, 3..=14);
         // We will only constrain intermed_8 for rows [2, 13], and let it unconstrained for other
         // rows
-        let is_row_2_13 = self
-            .row_idx_encoder
-            .contains_flag_range::<AB>(&next.flags.row_idx, 2..=13);
+        // let is_row_2_13 = self
+        //     .row_idx_encoder
+        //     .contains_flag_range::<AB>(&next.flags.row_idx, 2..=13);
+        builder.log_in_constraints("eval_message_schedule::second_loop");
         for i in 0..SHA256_ROUNDS_PER_ROW {
             // w_idx
             let w_idx = w[i].map(|x| x.into());
@@ -465,19 +498,20 @@ impl Sha256Air {
                     w_idx_limb + sig_w_limb,
                 );
 
-                builder.when(is_row_2_13.clone()).assert_eq(
-                    next.schedule_helper.intermed_8[i][j],
-                    local.schedule_helper.intermed_4[i][j],
-                );
+                // builder.when(is_row_2_13.clone()).assert_eq(
+                //     next.schedule_helper.intermed_8[i][j],
+                //     local.schedule_helper.intermed_4[i][j],
+                // );
 
-                builder.when(is_row_3_14.clone()).assert_eq(
-                    next.schedule_helper.intermed_12[i][j],
-                    local.schedule_helper.intermed_8[i][j],
-                );
+                // builder.when(is_row_3_14.clone()).assert_eq(
+                //     next.schedule_helper.intermed_12[i][j],
+                //     local.schedule_helper.intermed_8[i][j],
+                // );
             }
         }
 
         // Constrain the message schedule additions for `next` row
+        builder.log_in_constraints("eval_message_schedule::third_loop");
         for i in 0..SHA256_ROUNDS_PER_ROW {
             // Note, here by w_{t} we mean the i_th word of the `next` row
             // w_{t-7}
@@ -537,9 +571,13 @@ impl Sha256Air {
         builder: &mut AB,
         local: &Sha256RoundCols<AB::Var>,
         next: &Sha256RoundCols<AB::Var>,
-    ) {
+    ) where
+        AB: LoggingAirBuilder,
+    {
+        builder.log_in_constraints("eval_work_vars");
         let a = [local.work_vars.a, next.work_vars.a].concat();
         let e = [local.work_vars.e, next.work_vars.e].concat();
+        builder.log_in_constraints("eval_work_vars::first_loop");
         for i in 0..SHA256_ROUNDS_PER_ROW {
             for j in 0..SHA256_WORD_U16S {
                 // Although we need carry_a <= 6 and carry_e <= 5, constraining carry_a, carry_e in
@@ -550,64 +588,64 @@ impl Sha256Air {
                     .eval(builder, local.flags.is_round_row);
             }
 
-            let w_limbs = array::from_fn(|j| {
-                compose::<AB::Expr>(&next.message_schedule.w[i][j * 16..(j + 1) * 16], 1)
-                    * next.flags.is_round_row
-            });
-            let k_limbs = array::from_fn(|j| {
-                self.row_idx_encoder.flag_with_val::<AB>(
-                    &next.flags.row_idx,
-                    &(0..16)
-                        .map(|rw_idx| {
-                            (
-                                rw_idx,
-                                u32_into_limbs::<SHA256_WORD_U16S>(
-                                    SHA256_K[rw_idx * SHA256_ROUNDS_PER_ROW + i],
-                                )[j] as usize,
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            });
+            // let w_limbs = array::from_fn(|j| {
+            //     compose::<AB::Expr>(&next.message_schedule.w[i][j * 16..(j + 1) * 16], 1)
+            //         * next.flags.is_round_row
+            // });
+            // let k_limbs = array::from_fn(|j| {
+            //     self.row_idx_encoder.flag_with_val::<AB>(
+            //         &next.flags.row_idx,
+            //         &(0..16)
+            //             .map(|rw_idx| {
+            //                 (
+            //                     rw_idx,
+            //                     u32_into_limbs::<SHA256_WORD_U16S>(
+            //                         SHA256_K[rw_idx * SHA256_ROUNDS_PER_ROW + i],
+            //                     )[j] as usize,
+            //                 )
+            //             })
+            //             .collect::<Vec<_>>(),
+            //     )
+            // });
 
-            // Constrain `a = h + sig_1(e) + ch(e, f, g) + K + W + sig_0(a) + Maj(a, b, c)`
-            // We have to enforce this constraint on all rows since the degree of the constraint is
-            // already 3. So, we must fill in `carry_a` with dummy values on digest rows
-            // to ensure the constraint holds.
-            constraint_word_addition(
-                builder,
-                &[
-                    &e[i].map(|x| x.into()),                // previous `h`
-                    &big_sig1_field::<AB::Expr>(&e[i + 3]), // sig_1 of previous `e`
-                    &ch_field::<AB::Expr>(&e[i + 3], &e[i + 2], &e[i + 1]), /* Ch of previous
-                                                             * `e`, `f`, `g` */
-                    &big_sig0_field::<AB::Expr>(&a[i + 3]), // sig_0 of previous `a`
-                    &maj_field::<AB::Expr>(&a[i + 3], &a[i + 2], &a[i + 1]), /* Maj of previous
-                                                             * a, b, c */
-                ],
-                &[&w_limbs, &k_limbs],      // K and W
-                &a[i + 4],                  // new `a`
-                &next.work_vars.carry_a[i], // carries of addition
-            );
+            // // Constrain `a = h + sig_1(e) + ch(e, f, g) + K + W + sig_0(a) + Maj(a, b, c)`
+            // // We have to enforce this constraint on all rows since the degree of the constraint is
+            // // already 3. So, we must fill in `carry_a` with dummy values on digest rows
+            // // to ensure the constraint holds.
+            // constraint_word_addition(
+            //     builder,
+            //     &[
+            //         &e[i].map(|x| x.into()),                // previous `h`
+            //         &big_sig1_field::<AB::Expr>(&e[i + 3]), // sig_1 of previous `e`
+            //         &ch_field::<AB::Expr>(&e[i + 3], &e[i + 2], &e[i + 1]), /* Ch of previous
+            //                                                  * `e`, `f`, `g` */
+            //         &big_sig0_field::<AB::Expr>(&a[i + 3]), // sig_0 of previous `a`
+            //         &maj_field::<AB::Expr>(&a[i + 3], &a[i + 2], &a[i + 1]), /* Maj of previous
+            //                                                  * a, b, c */
+            //     ],
+            //     &[&w_limbs, &k_limbs],      // K and W
+            //     &a[i + 4],                  // new `a`
+            //     &next.work_vars.carry_a[i], // carries of addition
+            // );
 
-            // Constrain `e = d + h + sig_1(e) + ch(e, f, g) + K + W`
-            // We have to enforce this constraint on all rows since the degree of the constraint is
-            // already 3. So, we must fill in `carry_e` with dummy values on digest rows
-            // to ensure the constraint holds.
-            constraint_word_addition(
-                builder,
-                &[
-                    &a[i].map(|x| x.into()), // previous `d`
-                    &e[i].map(|x| x.into()), // previous `h`
-                    &big_sig1_field::<AB::Expr>(&e[i + 3]), /* sig_1 of previous
-                                              * `e` */
-                    &ch_field::<AB::Expr>(&e[i + 3], &e[i + 2], &e[i + 1]), /* Ch of previous
-                                                                             * `e`, `f`, `g` */
-                ],
-                &[&w_limbs, &k_limbs],      // K and W
-                &e[i + 4],                  // new `e`
-                &next.work_vars.carry_e[i], // carries of addition
-            );
+            // // Constrain `e = d + h + sig_1(e) + ch(e, f, g) + K + W`
+            // // We have to enforce this constraint on all rows since the degree of the constraint is
+            // // already 3. So, we must fill in `carry_e` with dummy values on digest rows
+            // // to ensure the constraint holds.
+            // constraint_word_addition(
+            //     builder,
+            //     &[
+            //         &a[i].map(|x| x.into()), // previous `d`
+            //         &e[i].map(|x| x.into()), // previous `h`
+            //         &big_sig1_field::<AB::Expr>(&e[i + 3]), /* sig_1 of previous
+            //                                   * `e` */
+            //         &ch_field::<AB::Expr>(&e[i + 3], &e[i + 2], &e[i + 1]), /* Ch of previous
+            //                                                                  * `e`, `f`, `g` */
+            //     ],
+            //     &[&w_limbs, &k_limbs],      // K and W
+            //     &e[i + 4],                  // new `e`
+            //     &next.work_vars.carry_e[i], // carries of addition
+            // );
         }
     }
 }

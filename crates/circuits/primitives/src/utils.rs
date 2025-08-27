@@ -74,3 +74,7 @@ pub fn compose<F: FieldAlgebra>(a: &[impl Into<F> + Clone], limb_size: usize) ->
         acc + x.clone().into() * F::from_canonical_usize(1 << (i * limb_size))
     })
 }
+
+pub trait LoggingAirBuilder: AirBuilder {
+    fn log_in_constraints(&mut self, message: &str);
+}
