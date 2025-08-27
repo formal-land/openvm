@@ -1,4 +1,6 @@
 use openvm_circuit::arch::{AdapterAirContext, BasicAdapterInterface, ImmInstruction, VmCoreAir};
+use openvm_circuit_primitives::utils::LoggingAirBuilder;
+use openvm_circuit_primitives::SubAir;
 use openvm_stark_backend::air_builders::symbolic::symbolic_expression::SymbolicExpression;
 use openvm_stark_backend::air_builders::symbolic::symbolic_variable::{Entry, SymbolicVariable};
 use openvm_stark_backend::interaction::{BusIndex, Interaction, InteractionBuilder};
@@ -9,8 +11,36 @@ use p3_field::Field;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-#[derive(Default)]
-struct RocqAirBuilder(Vec<SymbolicExpression<Goldilocks>>);
+enum Constraint<E> {
+    AssertZero(E),
+    Message(String),
+    Interaction(Interaction<SymbolicExpression<Goldilocks>>),
+}
+
+struct RocqAirBuilder {
+    main: RowMajorMatrix<SymbolicVariable<Goldilocks>>,
+    constraints: Vec<Constraint<SymbolicExpression<Goldilocks>>>,
+}
+
+impl RocqAirBuilder {
+    fn new(width: usize, height: usize) -> Self {
+        let mut main = RowMajorMatrix::new(
+            vec![SymbolicVariable::new(Entry::Public, 0); width * height],
+            width,
+        );
+
+        for h in 0..height {
+            for w in 0..width {
+                main.values[h * width + w] = SymbolicVariable::new(Entry::Public, h * width + w);
+            }
+        }
+
+        Self {
+            main,
+            constraints: Vec::new(),
+        }
+    }
+}
 
 impl AirBuilder for RocqAirBuilder {
     type F = Goldilocks;
@@ -22,38 +52,43 @@ impl AirBuilder for RocqAirBuilder {
     type M = RowMajorMatrix<Self::Var>;
 
     fn main(&self) -> <Self as AirBuilder>::M {
-        unimplemented!()
+        self.main.clone()
     }
 
     fn is_first_row(&self) -> <Self as AirBuilder>::Expr {
-        unimplemented!()
+        SymbolicExpression::IsFirstRow
     }
 
     fn is_last_row(&self) -> <Self as AirBuilder>::Expr {
-        unimplemented!()
+        SymbolicExpression::IsLastRow
     }
 
     fn is_transition_window(&self, _: usize) -> <Self as AirBuilder>::Expr {
-        unimplemented!()
+        SymbolicExpression::IsTransition
     }
 
     fn assert_zero<I>(&mut self, expr: I)
     where
         I: Into<Self::Expr>,
     {
-        self.0.push(expr.into());
+        self.constraints.push(Constraint::AssertZero(expr.into()));
     }
 }
 
 impl InteractionBuilder for RocqAirBuilder {
     fn push_interaction<E: Into<Self::Expr>>(
         &mut self,
-        _bus_index: BusIndex,
-        _fields: impl IntoIterator<Item = E>,
-        _count: impl Into<Self::Expr>,
-        _count_weight: u32,
+        bus_index: BusIndex,
+        fields: impl IntoIterator<Item = E>,
+        count: impl Into<Self::Expr>,
+        count_weight: u32,
     ) {
-        unimplemented!()
+        self.constraints.push(Constraint::Interaction(Interaction {
+            bus_index,
+            message: fields.into_iter().map(|f| f.into()).collect(),
+            count: count.into(),
+            count_weight,
+        }));
     }
 
     fn num_interactions(&self) -> usize {
@@ -65,10 +100,17 @@ impl InteractionBuilder for RocqAirBuilder {
     }
 }
 
+impl LoggingAirBuilder for RocqAirBuilder {
+    fn log_in_constraints(&mut self, message: &str) {
+        self.constraints
+            .push(Constraint::Message(message.to_string()));
+    }
+}
+
 pub(crate) fn print_branch_eq<const NUM_LIMBS: usize>() {
     let air: openvm_rv32im_circuit::BranchEqualCoreAir<NUM_LIMBS> =
         openvm_rv32im_circuit::BranchEqualCoreChip::new(12, 23).air;
-    let mut builder = RocqAirBuilder::default();
+    let mut builder = RocqAirBuilder::new(0, 0);
 
     let adapter_air_context: AdapterAirContext<
         SymbolicExpression<Goldilocks>,
@@ -106,6 +148,23 @@ pub(crate) fn print_branch_eq<const NUM_LIMBS: usize>() {
     builder.to_rocq(0);
     println!("Result 🛍️");
     adapter_air_context.to_rocq(2);
+}
+
+pub(crate) fn print_sha256() {
+    let air: openvm_sha256_air::Sha256Air = openvm_sha256_air::Sha256Air::new(
+        openvm_circuit_primitives::bitwise_op_lookup::BitwiseOperationLookupBus::new(8000),
+        8001,
+    );
+    let mut builder = RocqAirBuilder::new(
+        openvm_sha256_air::SHA256_DIGEST_WIDTH.max(openvm_sha256_air::SHA256_ROUND_WIDTH),
+        2,
+    );
+
+    air.eval(&mut builder, 0);
+
+    builder.to_rocq(0);
+    println!("Result 🛍️");
+    println!("  tt");
 }
 
 trait ToRocq {
@@ -293,12 +352,39 @@ impl<T: ToRocq, const N: usize> ToRocq for [T; N] {
     }
 }
 
+impl ToRocq for Interaction<SymbolicExpression<Goldilocks>> {
+    fn to_rocq(&self, indent: usize) {
+        println!("{}{}", " ".repeat(indent), "Interaction:");
+        println!("{}{}", " ".repeat(indent + 2), "message:");
+        for item in &self.message {
+            item.to_rocq(indent + 4);
+        }
+        println!("{}{}", " ".repeat(indent + 2), "count:");
+        self.count.to_rocq(indent + 4);
+        println!("{}{}", " ".repeat(indent + 2), "bus_index:");
+        println!("{}{}", " ".repeat(indent + 4), self.bus_index);
+        println!("{}{}", " ".repeat(indent + 2), "count_weight:");
+        println!("{}{}", " ".repeat(indent + 4), self.count_weight);
+    }
+}
+
 impl ToRocq for RocqAirBuilder {
     fn to_rocq(&self, indent: usize) {
         println!("{}{}", " ".repeat(indent), "Trace 🐾");
-        for item in &self.0 {
-            println!("{}{}", " ".repeat(indent + 2), "AssertZero:");
-            item.to_rocq(indent + 4);
+        for item in &self.constraints {
+            match item {
+                Constraint::AssertZero(expr) => {
+                    println!("{}{}", " ".repeat(indent + 2), "AssertZero:");
+                    expr.to_rocq(indent + 4);
+                }
+                Constraint::Message(message) => {
+                    println!("{}{}", " ".repeat(indent + 2), "Message 🦜");
+                    println!("{}{}", " ".repeat(indent + 4), message);
+                }
+                Constraint::Interaction(interaction) => {
+                    interaction.to_rocq(indent + 2);
+                }
+            }
         }
     }
 }

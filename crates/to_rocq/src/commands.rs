@@ -11,12 +11,16 @@ pub struct PrintCircuitArgs {
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub(crate) enum CircuitType {
     BranchEq,
+    Sha256,
 }
 
 pub fn print_circuit(args: PrintCircuitArgs) -> Result<()> {
     match args.circuit_type {
         CircuitType::BranchEq => {
             crate::circuit_printer::print_branch_eq::<4>();
+        }
+        CircuitType::Sha256 => {
+            crate::circuit_printer::print_sha256();
         }
     }
 
